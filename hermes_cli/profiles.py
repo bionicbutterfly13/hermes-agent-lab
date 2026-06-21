@@ -133,6 +133,13 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # Delete the marker file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
+# User-local plugins from the default profile are bootstrapped into every newly
+# created named profile. Profile-local plugin discovery only scans
+# ``$HERMES_HOME/plugins``; without this, clones can inherit config that enables
+# a provider while the provider's plugin remains invisible. Copy plugins only —
+# not default secrets, session state, or history.
+_PROFILE_BOOTSTRAP_REQUIRED_PLUGINS: tuple[str, ...] = ("mnemosyne",)
+
 
 def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
     """Return True if the profile opted out of bundled-skill seeding."""
@@ -140,6 +147,62 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
     except OSError:
         return False
+
+
+def _copy_bootstrap_plugins(profile_dir: Path) -> None:
+    """Copy default-profile plugins into a new named profile."""
+    default_plugins_dir = _get_default_hermes_home() / "plugins"
+    if not default_plugins_dir.is_dir():
+        return
+    target_plugins_dir = profile_dir / "plugins"
+    plugin_names = {
+        path.name for path in default_plugins_dir.iterdir() if path.is_dir()
+    }
+    plugin_names.update(_PROFILE_BOOTSTRAP_REQUIRED_PLUGINS)
+    for plugin_name in sorted(plugin_names):
+        src = default_plugins_dir / plugin_name
+        dst = target_plugins_dir / plugin_name
+        if not src.is_dir() or dst.exists():
+            continue
+        try:
+            shutil.copytree(
+                src,
+                dst,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            )
+        except OSError:
+            # Best-effort: profile creation should not fail because an optional
+            # user-local plugin disappeared mid-copy or has unusual file perms.
+            continue
+
+
+def _ensure_bootstrap_plugin_config(profile_dir: Path) -> None:
+    """Activate bootstrap plugins in a new profile when no provider is set."""
+    if not (profile_dir / "plugins" / "mnemosyne").is_dir():
+        return
+    config_path = profile_dir / "config.yaml"
+    try:
+        import yaml
+
+        config = {}
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+        if not isinstance(config, dict):
+            return
+        memory_cfg = config.setdefault("memory", {})
+        if not isinstance(memory_cfg, dict):
+            return
+        if memory_cfg.get("provider"):
+            return
+        memory_cfg["provider"] = "mnemosyne"
+        from utils import atomic_yaml_write
+
+        atomic_yaml_write(config_path, config, sort_keys=False)
+    except Exception:
+        # Best-effort only; the copied plugin is still available for manual
+        # activation via `hermes memory setup` / `hermes config set`.
+        return
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
@@ -1127,6 +1190,9 @@ def create_profile(
             )
         except OSError:
             pass  # best-effort — the feature still works via the empty skills/ dir
+
+    _copy_bootstrap_plugins(profile_dir)
+    _ensure_bootstrap_plugin_config(profile_dir)
 
     # Cloned configs can be older than the running Hermes (or predate schema
     # tracking entirely). Migrate config-only clones immediately so

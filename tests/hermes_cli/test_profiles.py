@@ -170,6 +170,30 @@ class TestCreateProfile:
                         "plans", "workspace", "cron"]:
             assert (profile_dir / subdir).is_dir(), f"Missing subdir: {subdir}"
 
+    def test_creates_profile_with_default_plugins_and_mnemosyne_active(self, profile_env):
+        tmp_path = profile_env
+        default_plugin = tmp_path / ".hermes" / "plugins" / "mnemosyne"
+        default_plugin.mkdir(parents=True)
+        (default_plugin / "__init__.py").write_text("# mnemosyne plugin\n")
+        (default_plugin / "plugin.yaml").write_text("name: hermes-mnemosyne\n")
+        (default_plugin / "__pycache__").mkdir()
+        (default_plugin / "__pycache__" / "stale.pyc").write_text("bytecode")
+        other_plugin = tmp_path / ".hermes" / "plugins" / "custom-memory"
+        other_plugin.mkdir(parents=True)
+        (other_plugin / "plugin.yaml").write_text("name: custom-memory\n")
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        copied = profile_dir / "plugins" / "mnemosyne"
+        assert (copied / "__init__.py").read_text() == "# mnemosyne plugin\n"
+        assert (copied / "plugin.yaml").read_text() == "name: hermes-mnemosyne\n"
+        assert (
+            profile_dir / "plugins" / "custom-memory" / "plugin.yaml"
+        ).read_text() == "name: custom-memory\n"
+        assert not (copied / "__pycache__").exists()
+        config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert config["memory"]["provider"] == "mnemosyne"
+
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
