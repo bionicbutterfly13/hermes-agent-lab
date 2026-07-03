@@ -94,3 +94,33 @@ Rollback:
 
 Next:
 - When Dr. Mani hands Archimedes a book/document/path/URL, generated skills should stay Archimedes-local unless Dr. Mani explicitly chooses another destination.
+
+## 2026-06-27 10:26 EDT — Added neutral Anbeeld writing guardrails
+
+Operator:
+- engineering
+
+Intent:
+- Give Archimedes the same writing preamble used by other profiles while preserving his book/document conversion boundary and not exposing hidden experimental framing.
+
+Changed:
+- Updated `/Users/manisaintvictor/.hermes/profiles/archimedes/SOUL.md` with a neutral `## Writing` section.
+- Added an explicit conflict boundary: writing rules govern reader-facing prose only and do not override `book-to-skill` source-boundary rules or any conversion workflow boundary.
+- Updated `/Users/manisaintvictor/.hermes/profiles/engineering/projects/archimedes/PROJECT.md` so future Engineering sessions know Archimedes has `writing`, `book-to-skill`, and `codebase-orientation` enabled.
+
+Observed behavior:
+- Archimedes has `writing` enabled alongside `book-to-skill` and `codebase-orientation`.
+- The `writing` package is byte-identical to the global canonical Anbeeld package.
+- No conflict found: `book-to-skill` controls conversion/source intake; `writing` controls prose quality for reader-facing outputs.
+
+Evidence:
+- `archimedes skills list` showed `book-to-skill`, `writing`, and `codebase-orientation` enabled.
+- `diff -qr /Users/manisaintvictor/.hermes/skills/writing /Users/manisaintvictor/.hermes/profiles/archimedes/skills/writing` returned no differences.
+- Readback of Archimedes `SOUL.md` showed `## Writing` plus the sentence that writing rules do not override `book-to-skill` source boundaries.
+
+Rollback:
+- Remove the `## Writing` section from `/Users/manisaintvictor/.hermes/profiles/archimedes/SOUL.md`.
+- Remove `/Users/manisaintvictor/.hermes/profiles/archimedes/skills/writing` only if Dr. Mani wants Archimedes without the Anbeeld writing skill.
+
+Next:
+- Restart or start a fresh Archimedes session to load the updated `SOUL.md` and skill inventory.
