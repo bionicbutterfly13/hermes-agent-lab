@@ -585,6 +585,51 @@ class TestCodexStreamCallbacks:
         agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
+    def test_codex_stream_reports_request_activity_on_every_event(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        touch_calls = []
+        request_activity = []
+        agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_text.delta", delta=" world"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r2", usage=None),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _FakeCreateStream()
+
+        agent._run_codex_stream(
+            {}, client=mock_client, on_event_activity=request_activity.append
+        )
+
+        assert touch_calls.count("receiving stream response") == 3
+        assert len(request_activity) == 3
+        assert request_activity == sorted(request_activity)
+
 
     def test_codex_remote_protocol_error_retries_then_raises(self):
         """Transport errors from ``responses.create`` retry once then re-raise.
@@ -1634,4 +1679,3 @@ class TestBedrockReasoningStaleFloor:
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
 
         assert _bedrock_reasoning_stale_floor(model_id) == expected
-
