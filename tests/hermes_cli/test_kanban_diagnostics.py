@@ -9,6 +9,7 @@ engine works on sqlite3.Row objects as well as dataclasses.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -29,8 +30,13 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(tmp_path.resolve())
+    kb._INITIALIZED_PATHS.discard(str(db_path))
+    kb.init_db(db_path)
     return home
 
 
@@ -139,7 +145,9 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
     as well as dataclass Task / plain dict. The API layer passes Row
     objects directly.
     """
-    conn = kbc.connect()
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(kanban_home.parent.resolve())
+    conn = kbc.connect(db_path)
     try:
         parent = kb.create_task(conn, title="p", assignee="w")
         real = kb.create_task(conn, title="r", assignee="x", created_by="w")
@@ -166,6 +174,78 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
         assert "t_deadbeef1" in diags[0].data["phantom_ids"]
     finally:
         conn.close()
+
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        conn.execute("SELECT * FROM tasks WHERE id = ?", (parent,))
+
+    with kbc.connect_closing(db_path) as reopened:
+        row = reopened.execute(
+            "SELECT * FROM tasks WHERE id = ?", (parent,),
+        ).fetchone()
+        events = list(reopened.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY id",
+            (parent,),
+        ).fetchall())
+        runs = list(reopened.execute(
+            "SELECT * FROM task_runs WHERE task_id = ? ORDER BY id",
+            (parent,),
+        ).fetchall())
+        diags = kd.compute_task_diagnostics(row, events, runs)
+        assert len(diags) == 1
+        assert diags[0].kind == "hallucinated_cards"
+        assert "t_deadbeef1" in diags[0].data["phantom_ids"]
+
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        reopened.execute("SELECT * FROM tasks WHERE id = ?", (parent,))
+
+
+def test_healthy_task_survives_database_reopen(kanban_home):
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(kanban_home.parent.resolve())
+    title = "Check infrastructure storage"
+    with kbc.connect_closing(db_path) as conn:
+        task_id = kb.create_task(conn, title=title, assignee="worker")
+
+    with kbc.connect_closing(db_path) as reopened:
+        task = kb.get_task(reopened, task_id)
+        assert task is not None
+        assert task.id == task_id
+        assert task.title == title
+        events = kb.list_events(reopened, task_id)
+        assert any(event.task_id == task_id and event.kind == "created" for event in events)
+        runs = kb.list_runs(reopened, task_id)
+        assert runs == []
+        diags = kd.compute_task_diagnostics(task, events, runs, now=task.created_at)
+        assert diags == []
+
+        missing_id = "t_missing01"
+        assert missing_id != task_id
+        assert kb.get_task(reopened, missing_id) is None
+        assert kb.list_events(reopened, missing_id) == []
+        assert kb.list_runs(reopened, missing_id) == []
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [kb.get_task, kb.list_events, kb.list_runs],
+    ids=["get_task", "list_events", "list_runs"],
+)
+def test_readers_raise_after_connection_closes(kanban_home, reader):
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(kanban_home.parent.resolve())
+    with kbc.connect_closing(db_path) as conn:
+        task_id = kb.create_task(conn, title="Check database acquisition", assignee="worker")
+
+    with kbc.connect_closing(db_path) as reopened:
+        reader(reopened, task_id)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        reader(reopened, task_id)
+
+    with kbc.connect_closing(db_path) as recovered:
+        task = kb.get_task(recovered, task_id)
+        assert task is not None
+        assert task.id == task_id
 
 
 # ---------------------------------------------------------------------------
