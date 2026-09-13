@@ -199,6 +199,55 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
         reopened.execute("SELECT * FROM tasks WHERE id = ?", (parent,))
 
 
+def test_healthy_task_survives_database_reopen(kanban_home):
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(kanban_home.parent.resolve())
+    title = "Check infrastructure storage"
+    with kbc.connect_closing(db_path) as conn:
+        task_id = kb.create_task(conn, title=title, assignee="worker")
+
+    with kbc.connect_closing(db_path) as reopened:
+        task = kb.get_task(reopened, task_id)
+        assert task is not None
+        assert task.id == task_id
+        assert task.title == title
+        events = kb.list_events(reopened, task_id)
+        assert any(event.task_id == task_id and event.kind == "created" for event in events)
+        runs = kb.list_runs(reopened, task_id)
+        assert runs == []
+        diags = kd.compute_task_diagnostics(task, events, runs, now=task.created_at)
+        assert diags == []
+
+        missing_id = "t_missing01"
+        assert missing_id != task_id
+        assert kb.get_task(reopened, missing_id) is None
+        assert kb.list_events(reopened, missing_id) == []
+        assert kb.list_runs(reopened, missing_id) == []
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [kb.get_task, kb.list_events, kb.list_runs],
+    ids=["get_task", "list_events", "list_runs"],
+)
+def test_readers_raise_after_connection_closes(kanban_home, reader):
+    db_path = kb.kanban_db_path(board="default").resolve()
+    assert db_path.is_relative_to(kanban_home.parent.resolve())
+    with kbc.connect_closing(db_path) as conn:
+        task_id = kb.create_task(conn, title="Check database acquisition", assignee="worker")
+
+    with kbc.connect_closing(db_path) as reopened:
+        reader(reopened, task_id)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        reader(reopened, task_id)
+
+    with kbc.connect_closing(db_path) as recovered:
+        task = kb.get_task(recovered, task_id)
+        assert task is not None
+        assert task.id == task_id
+
+
 # ---------------------------------------------------------------------------
 # Error-tolerance: a broken rule shouldn't 500 the whole compute call
 # ---------------------------------------------------------------------------
