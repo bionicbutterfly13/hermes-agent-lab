@@ -23,7 +23,8 @@ STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
 LOCK_NAMES = ("shallow.lock", "index.lock", "HEAD.lock", "MERGE_HEAD.lock")
 # Temp-file prefixes git writes into .git/objects/pack during a transfer and renames away on
 # success; anything left with these names after a fetch died is garbage by definition.
-_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_")
+# ``.tmp-<pid>-pack*`` is the same thing from ``pack-objects`` (repack/gc) killed mid-write.
+_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_", ".tmp-")
 
 
 def _git_proc_running() -> bool:
@@ -57,11 +58,21 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
+                if os.name == "nt":
+                    # git renames its transfer temps into place read-only; Windows refuses to
+                    # unlink a read-only file (EACCES/13), so without clearing the write bit
+                    # this sweep silently removes nothing on real debris (#116384).
+                    try:
+                        os.chmod(entry, 0o666)
+                    except OSError:
+                        pass
                 entry.unlink()
                 removed.append(str(entry))
                 log_removed(entry, st.st_size)
-        except OSError:
-            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
+        except OSError as exc:
+            # A cleaner that fails silently is worse than none: debug-level skips hid the
+            # Windows read-only unlink failure for months while debris grew to gigabytes.
+            logger.warning("Could not clear %s (skipping): %s", entry, exc)
     return removed
 
 
